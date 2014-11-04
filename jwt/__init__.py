@@ -25,7 +25,7 @@ if sys.version_info >= (3, 0, 0):
     basestring = str
 
 
-__version__ = '0.2.3'
+__version__ = '0.3.0'
 __all__ = ['encode', 'decode', 'DecodeError']
 
 
@@ -37,7 +37,16 @@ class ExpiredSignature(Exception):
     pass
 
 
+class InvalidAudience(Exception):
+    pass
+
+
+class InvalidIssuer(Exception):
+    pass
+
+
 signing_methods = {
+    'none': lambda msg, key: b'',
     'HS256': lambda msg, key: hmac.new(key, msg, hashlib.sha256).digest(),
     'HS384': lambda msg, key: hmac.new(key, msg, hashlib.sha384).digest(),
     'HS512': lambda msg, key: hmac.new(key, msg, hashlib.sha512).digest()
@@ -60,6 +69,7 @@ def prepare_HS_key(key):
     return key
 
 prepare_key_methods = {
+    'none': lambda key: None,
     'HS256': prepare_HS_key,
     'HS384': prepare_HS_key,
     'HS512': prepare_HS_key
@@ -85,13 +95,14 @@ try:
     })
 
     def prepare_RS_key(key):
+        if isinstance(key, RSA._RSAobj):
+            return key
+
         if isinstance(key, basestring):
             if isinstance(key, unicode):
                 key = key.encode('utf-8')
 
             key = RSA.importKey(key)
-        elif isinstance(key, RSA._RSAobj):
-            pass
         else:
             raise TypeError('Expecting a PEM- or RSA-formatted key.')
 
@@ -125,6 +136,10 @@ try:
     })
 
     def prepare_ES_key(key):
+        if isinstance(key, ecdsa.SigningKey) or \
+           isinstance(key, ecdsa.VerifyingKey):
+            return key
+
         if isinstance(key, basestring):
             if isinstance(key, unicode):
                 key = key.encode('utf-8')
@@ -139,10 +154,9 @@ try:
                     key = ecdsa.SigningKey.from_pem(key)
                 except:
                     raise
-        elif isinstance(key, ecdsa.SigningKey) or isinstance(key, ecdsa.VerifyingKey):
-            pass
         else:
-            raise TypeError("Expecting a PEM-formatted key.")
+            raise TypeError('Expecting a PEM-formatted key.')
+
         return key
 
     prepare_key_methods.update({
@@ -153,7 +167,6 @@ try:
 
 except ImportError:
     pass
-
 
 
 def constant_time_compare(val1, val2):
@@ -203,6 +216,9 @@ def header(jwt):
 def encode(payload, key, algorithm='HS256', headers=None):
     segments = []
 
+    if algorithm is None:
+        algorithm = 'none'
+
     # Check that we get a mapping
     if not isinstance(payload, Mapping):
         raise TypeError('Expecting a mapping object, as json web token only'
@@ -238,12 +254,15 @@ def encode(payload, key, algorithm='HS256', headers=None):
     return b'.'.join(segments)
 
 
-def decode(jwt, key='', verify=True, verify_expiration=True, leeway=0):
+def decode(jwt, key='', verify=True, **kwargs):
     payload, signing_input, header, signature = load(jwt)
 
     if verify:
+        verify_expiration = kwargs.pop('verify_expiration', True)
+        leeway = kwargs.pop('leeway', 0)
+
         verify_signature(payload, signing_input, header, signature, key,
-                         verify_expiration, leeway)
+                         verify_expiration, leeway, **kwargs)
 
     return payload
 
@@ -284,7 +303,7 @@ def load(jwt):
 
 
 def verify_signature(payload, signing_input, header, signature, key='',
-                     verify_expiration=True, leeway=0):
+                     verify_expiration=True, leeway=0, **kwargs):
     try:
         algorithm = header['alg'].upper()
         key = prepare_key_methods[algorithm](key)
@@ -300,8 +319,31 @@ def verify_signature(payload, signing_input, header, signature, key='',
     except KeyError:
         raise DecodeError('Algorithm not supported')
 
+    if 'nbf' in payload and verify_expiration:
+        utc_timestamp = timegm(datetime.utcnow().utctimetuple())
+
+        if payload['nbf'] > (utc_timestamp + leeway):
+            raise ExpiredSignature('Signature not yet valid')
+
     if 'exp' in payload and verify_expiration:
         utc_timestamp = timegm(datetime.utcnow().utctimetuple())
 
         if payload['exp'] < (utc_timestamp - leeway):
             raise ExpiredSignature('Signature has expired')
+
+    audience = kwargs.get('audience')
+
+    if audience:
+        if isinstance(audience, list):
+            audiences = audience
+        else:
+            audiences = [audience]
+
+        if payload.get('aud') not in audiences:
+            raise InvalidAudience('Invalid audience')
+
+    issuer = kwargs.get('issuer')
+
+    if issuer:
+        if payload.get('iss') != issuer:
+            raise InvalidIssuer('Invalid issuer')

@@ -338,8 +338,35 @@ class TestJWT(unittest.TestCase):
             lambda: jwt.verify_signature(
                 decoded_payload, signing, header, signature, secret))
 
+    def test_decode_with_notbefore(self):
+        self.payload['nbf'] = utc_timestamp() + 10
+        secret = 'secret'
+        jwt_message = jwt.encode(self.payload, secret)
+
+        self.assertRaises(
+            jwt.ExpiredSignature,
+            lambda: jwt.decode(jwt_message, secret))
+
+        decoded_payload, signing, header, signature = jwt.load(jwt_message)
+
+        self.assertRaises(
+            jwt.ExpiredSignature,
+            lambda: jwt.verify_signature(
+                decoded_payload, signing, header, signature, secret))
+
     def test_decode_skip_expiration_verification(self):
         self.payload['exp'] = time.time() - 1
+        secret = 'secret'
+        jwt_message = jwt.encode(self.payload, secret)
+
+        jwt.decode(jwt_message, secret, verify_expiration=False)
+
+        decoded_payload, signing, header, signature = jwt.load(jwt_message)
+        jwt.verify_signature(decoded_payload, signing, header,
+                             signature, secret, verify_expiration=False)
+
+    def test_decode_skip_notbefore_verification(self):
+        self.payload['nbf'] = time.time() + 10
         secret = 'secret'
         jwt_message = jwt.encode(self.payload, secret)
 
@@ -371,6 +398,38 @@ class TestJWT(unittest.TestCase):
             jwt.ExpiredSignature,
             lambda: jwt.verify_signature(decoded_payload, signing,
                                          header, signature, secret, leeway=1))
+
+    def test_decode_with_notbefore_with_leeway(self):
+        self.payload['nbf'] = utc_timestamp() + 10
+        secret = 'secret'
+        jwt_message = jwt.encode(self.payload, secret)
+
+        decoded_payload, signing, header, signature = jwt.load(jwt_message)
+
+        # With 13 seconds leeway, should be ok
+        jwt.decode(jwt_message, secret, leeway=13)
+
+        jwt.verify_signature(decoded_payload, signing, header,
+                             signature, secret, leeway=13)
+
+        # With 1 seconds, should fail
+        self.assertRaises(
+            jwt.ExpiredSignature,
+            lambda: jwt.decode(jwt_message, secret, leeway=1))
+
+        self.assertRaises(
+            jwt.ExpiredSignature,
+            lambda: jwt.verify_signature(decoded_payload, signing,
+                                         header, signature, secret, leeway=1))
+
+    def test_encode_decode_with_algo_none(self):
+        jwt_message = jwt.encode(self.payload, key=None, algorithm=None)
+
+        self.assertRaises(
+            jwt.DecodeError,
+            lambda: jwt.decode(jwt_message))
+
+        jwt.decode(jwt_message, verify=False)
 
     def test_encode_decode_with_rsa_sha256(self):
         try:
@@ -631,6 +690,126 @@ class TestJWT(unittest.TestCase):
             self.assertFalse('ES256' in jwt.prepare_key_methods)
             self.assertFalse('ES384' in jwt.prepare_key_methods)
             self.assertFalse('ES512' in jwt.prepare_key_methods)
+
+    def test_check_audience(self):
+        audience = 'urn:foo'
+
+        payload = {
+            'some': 'payload',
+            'aud': 'urn:foo'
+        }
+
+        token = jwt.encode(payload, 'secret')
+        decoded = jwt.decode(token, 'secret', audience=audience)
+
+        self.assertEqual(decoded, payload)
+
+    def test_check_audience_in_array(self):
+        audience = ['urn:foo', 'urn:other']
+
+        payload = {
+            'some': 'payload',
+            'aud': 'urn:foo'
+        }
+
+        token = jwt.encode(payload, 'secret')
+        decoded = jwt.decode(token, 'secret', audience=audience)
+
+        self.assertEqual(decoded, payload)
+
+    def test_raise_exception_invalid_audience(self):
+        audience = 'urn:wrong'
+
+        payload = {
+            'some': 'payload',
+            'aud': 'urn:foo'
+        }
+
+        token = jwt.encode(payload, 'secret')
+
+        self.assertRaises(
+            jwt.InvalidAudience,
+            lambda: jwt.decode(token, 'secret', audience=audience))
+
+    def test_raise_exception_invalid_audience_in_array(self):
+        audience = ['urn:wrong', 'urn:morewrong']
+
+        payload = {
+            'some': 'payload',
+            'aud': 'urn:foo'
+        }
+
+        token = jwt.encode(payload, 'secret')
+
+        self.assertRaises(
+            jwt.InvalidAudience,
+            lambda: jwt.decode(token, 'secret', audience=audience))
+
+    def test_raise_exception_token_without_audience(self):
+        audience = 'urn:wrong'
+
+        payload = {
+            'some': 'payload',
+        }
+
+        token = jwt.encode(payload, 'secret')
+
+        self.assertRaises(
+            jwt.InvalidAudience,
+            lambda: jwt.decode(token, 'secret', audience=audience))
+
+    def test_raise_exception_token_without_audience_in_array(self):
+        audience = ['urn:wrong', 'urn:morewrong']
+
+        payload = {
+            'some': 'payload',
+        }
+
+        token = jwt.encode(payload, 'secret')
+
+        self.assertRaises(
+            jwt.InvalidAudience,
+            lambda: jwt.decode(token, 'secret', audience=audience))
+
+    def test_check_issuer(self):
+        issuer = 'urn:foo'
+
+        payload = {
+            'some': 'payload',
+            'iss': 'urn:foo'
+        }
+
+        token = jwt.encode(payload, 'secret')
+        decoded = jwt.decode(token, 'secret', issuer=issuer)
+
+        self.assertEqual(decoded, payload)
+
+    def test_raise_exception_invalid_issuer(self):
+        issuer = 'urn:wrong'
+
+        payload = {
+            'some': 'payload',
+            'iss': 'urn:foo'
+        }
+
+        token = jwt.encode(payload, 'secret')
+
+        self.assertRaises(
+            jwt.InvalidIssuer,
+            lambda: jwt.decode(token, 'secret', issuer=issuer))
+
+    def test_raise_exception_token_without_issuer(self):
+        issuer = 'urn:wrong'
+
+        payload = {
+            'some': 'payload',
+        }
+
+        token = jwt.encode(payload, 'secret')
+
+        self.assertRaises(
+            jwt.InvalidIssuer,
+            lambda: jwt.decode(token, 'secret', issuer=issuer))
 
 
 if __name__ == '__main__':
